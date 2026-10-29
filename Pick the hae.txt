@@ -1,0 +1,862 @@
+-- Chapter 1 (FARMHOUSE) - Ouroboros Hub @hidevin
+-- Generated via scan_workflow + extract_workflow + UI_STYLE + ObsidianUltra
+-- GameId 10756011174 PlaceId 108628039999641
+
+local repo = "https://raw.githubusercontent.com/joustingmatch/ObsidianUltra/main/"
+local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
+local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+local VirtualUser = game:GetService("VirtualUser")
+
+local LocalPlayer = Players.LocalPlayer
+local Options = Library.Options
+local Toggles = Library.Toggles
+
+-- Theme tokens from UI_STYLE.json
+Library.Scheme.BackgroundColor = Color3.fromHex("#0d0d0d")
+Library.Scheme.MainColor = Color3.fromHex("#282828")
+Library.Scheme.OutlineColor = Color3.fromHex("#3a3a3a")
+Library.Scheme.AccentColor = Color3.fromHex("#5865F2")
+Library.Scheme.FontColor = Color3.fromHex("#ffffff")
+Library.CornerRadius = 10
+
+local gameName = "Chapter 1 (FARMHOUSE)"
+pcall(function()
+    local info = game:HttpGet("https://games.roblox.com/v1/games?universeIds=10756011174")
+end)
+
+-- Window: header Ouroboros Hub, no icon, RightShift toggle, no search per UI_STYLE
+local Window = Library:CreateWindow({
+    Title = "Ouroboros Hub",
+    Footer = {
+        gameName .. " | ",
+        { Text = "discord.gg/2TYQ9yw5x", Copyable = true },
+        " | @hidevin",
+    },
+    CopyableFooter = false,
+    Icon = nil,
+    ShowCustomCursor = true,
+    NotifySide = "Right",
+    DisableSearch = true,
+    FuzzySearch = false,
+    SearchValues = false,
+    Minimizable = true,
+    MinimizeKeybind = Enum.KeyCode.RightBracket,
+    Resizable = true,
+    Center = true,
+    AutoShow = true,
+    CornerRadius = 10,
+    EnableSidebarResize = true,
+    Animations = {
+        ToggleWindow = true,
+        TabSwitch = true,
+        Groupbox = true,
+        Dropdown = true,
+        SubTabUnderline = true,
+    },
+    TabTransitionTime = 0.22,
+})
+
+Window:SetFooter({
+    gameName .. " | ",
+    { Text = "discord.gg/2TYQ9yw5x", Copyable = true },
+})
+
+-- Tabs per UI_STYLE.json + GAME_FEATURES mapping
+local Tabs = {
+    Main = Window:AddTab({ Name = "Main", Icon = "house", Description = "Dashboard" }),
+    Farming = Window:AddTab({ Name = "Farming", Icon = "wheat", Description = "Resource & Selling" }),
+    Inventory = Window:AddTab({ Name = "Inventory", Icon = "backpack", Description = "Shop & Upgrades" }),
+    Settings = Window:AddTab({ Name = "Settings", Icon = "settings", Description = "Config & System" }),
+}
+
+-- Replicated refs
+local NeedleHaystack = ReplicatedStorage:WaitForChild("NeedleHaystack")
+local Config = require(NeedleHaystack:WaitForChild("Config"))
+local UpgradeConfig = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Configs"):WaitForChild("UpgradeConfig"))
+local BuyUpgrade = NeedleHaystack:WaitForChild("BuyUpgrade")
+local BuyShopItem = NeedleHaystack:WaitForChild("BuyShopItem")
+local PickHay = NeedleHaystack:WaitForChild("PickHay")
+local PickDroppedHay = NeedleHaystack:WaitForChild("PickDroppedHay")
+local SellHay = NeedleHaystack:WaitForChild("SellHay")
+local CollectGem = NeedleHaystack:WaitForChild("CollectGem")
+local DeployDrone = NeedleHaystack:WaitForChild("DeployDrone")
+local PitchforkDig = NeedleHaystack:WaitForChild("PitchforkDig")
+local TntAction = NeedleHaystack:WaitForChild("TntAction")
+local VacuumAction = NeedleHaystack:WaitForChild("VacuumAction")
+local NeedleHandIn = NeedleHaystack:WaitForChild("NeedleHandIn")
+
+local BarnShop = Workspace:WaitForChild("BarnShop")
+local DroppedHayFolder = Workspace:FindFirstChild("DroppedHay")
+local GemsClientFolder = Workspace:FindFirstChild("GemsClient")
+
+-- Helpers
+local function getCash()
+    local ls = LocalPlayer:FindFirstChild("leaderstats")
+    local cash = ls and ls:FindFirstChild("Cash")
+    return cash and cash.Value or 0
+end
+local function getGems()
+    return tonumber(LocalPlayer:GetAttribute("Gems")) or 0
+end
+local function getHayHeld()
+    local v = LocalPlayer:GetAttribute("HayHeld")
+    if v ~= nil then return tonumber(v) or 0 end
+    -- fallback count held parts
+    return #Workspace:FindFirstChild("DroppedHay") and 0 or 0
+end
+local function getHayCapacity()
+    return tonumber(LocalPlayer:GetAttribute("HayCapacity")) or 25
+end
+local function owns(attr) return LocalPlayer:GetAttribute(attr) == true end
+
+local function findClosestHay()
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+    local best, bestDist = nil, math.huge
+    -- scan for hay with HayId (visible strands)
+    for _, inst in ipairs(Workspace:GetDescendants()) do
+        if inst:GetAttribute("HayId") and inst:IsA("BasePart") and inst.Parent then
+            local d = (inst.Position - hrp.Position).Magnitude
+            if d < bestDist and d < 30 then
+                bestDist = d
+                best = inst
+            end
+        end
+    end
+    return best
+end
+
+local function getGrabCandidates(centerPart)
+    -- gather nearby hay ids within grab radius for bonus
+    local radius = tonumber(LocalPlayer:GetAttribute("HayGrabRadius")) or 0
+    if radius <= 0 then return {} end
+    local out = {}
+    if not centerPart then return out end
+    local cp = centerPart.Position
+    for _, inst in ipairs(Workspace:GetDescendants()) do
+        if inst ~= centerPart and inst:GetAttribute("HayId") and inst:IsA("BasePart") then
+            if (inst.Position - cp).Magnitude <= radius + 1 then
+                table.insert(out, inst:GetAttribute("HayId"))
+                if #out >= 6 then break end
+            end
+        end
+    end
+    return out
+end
+
+local function findClosestDropped()
+    if not DroppedHayFolder then DroppedHayFolder = Workspace:FindFirstChild("DroppedHay") end
+    if not DroppedHayFolder then return nil end
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+    local best, bestDist = nil, 28
+    for _, m in ipairs(DroppedHayFolder:GetChildren()) do
+        local part = m:IsA("BasePart") and m or m:FindFirstChildWhichIsA("BasePart")
+        if part then
+            local d = (part.Position - hrp.Position).Magnitude
+            if d < bestDist then
+                bestDist = d
+                best = part.Parent:IsA("BasePart") and part.Parent or m
+            end
+        end
+    end
+    return best
+end
+
+local function findClosestGem()
+    if not GemsClientFolder then GemsClientFolder = Workspace:FindFirstChild("GemsClient") end
+    local root = GemsClientFolder or Workspace
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+    local best, bestDist, bestId = nil, 35, nil
+    for _, mdl in ipairs(root:GetDescendants()) do
+        if mdl:IsA("BasePart") and mdl:GetAttribute("GemId") then
+            local d = (mdl.Position - hrp.Position).Magnitude
+            if d < bestDist then
+                bestDist = d
+                best = mdl
+                bestId = mdl:GetAttribute("GemId")
+            end
+        end
+    end
+    if best and bestId then return best, bestId end
+    -- also search NeedleHaystack GemTemplate spawns
+    for _, mdl in ipairs(Workspace:GetDescendants()) do
+        if mdl:GetAttribute("GemId") and mdl:IsA("BasePart") then
+            local d = (mdl.Position - hrp.Position).Magnitude
+            if d < bestDist then
+                bestDist = d
+                best = mdl
+                bestId = mdl:GetAttribute("GemId")
+            end
+        end
+    end
+    if best then return best, bestId end
+    return nil, nil
+end
+
+local function isBagFull()
+    return getHayHeld() >= getHayCapacity()
+end
+
+local function getNearestSellPart()
+    local CollectionService = game:GetService("CollectionService")
+    local camPos = workspace.CurrentCamera and workspace.CurrentCamera.CFrame.Position or (LocalPlayer.Character and LocalPlayer.Character:GetPivot().Position or Vector3.new(0,0,0))
+    local best, bestDist = nil, math.huge
+    for _, part in ipairs(CollectionService:GetTagged(Config.SELL_PART_NAME)) do
+        if part:IsA("BasePart") and part:IsDescendantOf(workspace) then
+            local d = (part.Position - camPos).Magnitude
+            -- also check character distance for sell proximity
+            local char = LocalPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local cd = (part.Position - hrp.Position).Magnitude
+                d = math.min(d, cd)
+            end
+            if d < bestDist then
+                bestDist = d
+                best = part
+            end
+        end
+    end
+    if not best then
+        -- fallback: find SellModel SellPart brute
+        for _, inst in ipairs(workspace.SellModel:GetDescendants()) do
+            if inst.Name == "SellPart" and inst:IsA("BasePart") then
+                return inst
+            end
+        end
+    end
+    return best
+end
+
+local function trySell()
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local sellPart = getNearestSellPart()
+    if hrp and sellPart then
+        local dist = (hrp.Position - sellPart.Position).Magnitude
+        if dist > 14 then
+            -- teleport near sell hole, keep Y offset to avoid clipping
+            local target = sellPart.CFrame + Vector3.new(0, 3, 2)
+            hrp.CFrame = target
+            -- also aim camera at hole so isAimingAtSellHole passes
+            if workspace.CurrentCamera then
+                workspace.CurrentCamera.CFrame = CFrame.lookAt(workspace.CurrentCamera.CFrame.Position, sellPart.Position)
+            end
+            task.wait(0.25)
+        else
+            -- ensure camera aims at hole even when close
+            if workspace.CurrentCamera then
+                pcall(function()
+                    workspace.CurrentCamera.CFrame = CFrame.lookAt(workspace.CurrentCamera.CFrame.Position, sellPart.Position)
+                end)
+            end
+            task.wait(0.05)
+        end
+    end
+    local ok, err = pcall(function() SellHay:FireServer() end)
+    if not ok then
+        Library:Notify({Title="Sell Failed", Description=tostring(err), Time=2, Type="Error"})
+    end
+    -- fallback: if server rejected (HayHeld unchanged after 0.6s), try one more time with forced teleport
+    task.spawn(function()
+        local before = getHayHeld()
+        task.wait(0.6)
+        if before > 0 and getHayHeld() == before and hrp and sellPart then
+            hrp.CFrame = sellPart.CFrame + Vector3.new(0, 4, 0)
+            task.wait(0.2)
+            pcall(function() SellHay:FireServer() end)
+        end
+    end)
+    -- return to pile for next pick cycle if auto-pick enabled
+    task.spawn(function()
+        task.wait(1.0)
+        local needReturn = false
+        if Toggles.AutoPickHay and Toggles.AutoPickHay.Value then needReturn = true end
+        if Toggles.AutoCollectDroppedHay and Toggles.AutoCollectDroppedHay.Value then needReturn = true end
+        if Toggles.AutoCollectGems and Toggles.AutoCollectGems.Value then needReturn = true end
+        if Toggles.AutoVacuumCollect and Toggles.AutoVacuumCollect.Value then needReturn = true end
+        if Toggles.AutoVacuum and Toggles.AutoVacuum.Value then needReturn = true end
+        if Toggles.AutoUsePitchfork and Toggles.AutoUsePitchfork.Value then needReturn = true end
+        if Toggles.AutoFindNeedle and Toggles.AutoFindNeedle.Value then needReturn = true end
+        if needReturn and getHayHeld() == 0 then
+            local pile = Config.PILE_CENTER
+            local hrp2 = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if hrp2 and (hrp2.Position - pile).Magnitude > 22 then
+                hrp2.CFrame = CFrame.new(pile + Vector3.new(math.random(-2,2), 5, math.random(-2,2)))
+                if workspace.CurrentCamera then
+                    workspace.CurrentCamera.CFrame = CFrame.new(hrp2.Position + Vector3.new(0,4,0), pile)
+                end
+            end
+        end
+    end)
+end
+
+-- MAIN TAB (empty of mechanics per rules)
+do
+    local Info = Tabs.Main:AddLeftGroupbox("Dashboard", "info")
+    Info:AddLabel("Game: " .. gameName, true)
+    Info:AddLabel("Hub: @hidevin", true)
+    Info:AddLabel("Toggle UI: RightShift", true)
+    Info:AddDivider()
+    Info:AddLabel("Session", true)
+    local sessionLabel = Info:AddLabel("0s elapsed", true)
+    Info:AddButton({ Text = "Copy Discord", Func = function() if setclipboard then setclipboard("https://discord.gg/2TYQ9yw5x") end Library:Notify({Title="Copied", Description="discord.gg/2TYQ9yw5x", Time=2, Type="Success"}) end })
+    task.spawn(function()
+        local s=0
+        while true do
+            task.wait(1)
+            if Library.Unloaded then break end
+            s+=1
+            pcall(function() sessionLabel:SetText(string.format("Session: %dm %ds | Cash: $%s | Gems: %s | Hay: %d/%d", s//60, s%60, tostring(getCash()), tostring(getGems()), getHayHeld(), getHayCapacity())) end)
+        end
+    end)
+    local Status = Tabs.Main:AddRightGroupbox("Status", "activity")
+    Status:AddLabel("Farming, Inventory tabs hold all automation.", true)
+    Status:AddLabel("Settings holds Config & Anti-AFK.", true)
+end
+
+-- FARMING TAB with sub-tabs per mandate (>1 feature -> sub-tabs)
+do
+    Tabs.Farming:SetSubTabAlignment("Center")
+    local Collecting = Tabs.Farming:AddSubTab({ Name = "Collecting", Icon = "wheat" })
+    local Selling = Tabs.Farming:AddSubTab({ Name = "Selling", Icon = "coins" })
+    local Tools = Tabs.Farming:AddSubTab({ Name = "Tools", Icon = "hammer" })
+    local NeedleTab = Tabs.Farming:AddSubTab({ Name = "Needle", Icon = "search" })
+
+    -- Collecting sub-tab
+    local ResGroup = Collecting:AddLeftGroupbox("Resource Collecting", "wheat")
+    ResGroup:AddToggle("AutoPickHay", { Text = "Auto Pick Hay", Default = false, Tooltip = "Pick hay from stack continuously" })
+    ResGroup:AddToggle("AutoCollectDroppedHay", { Text = "Auto Collect Dropped Hay", Default = false })
+    ResGroup:AddToggle("AutoCollectGems", { Text = "Auto Collect Gems", Default = false })
+    ResGroup:AddToggle("AutoVacuumCollect", { Text = "Auto Vacuum Collect", Default = false, Tooltip = "Uses Vacuum Start/Stop (requires Vacuum tool)" })
+    ResGroup:AddSlider("CollectInterval", { Text = "Loop Interval", Default = 1, Min = 0.1, Max = 3, Rounding = 1, Suffix = "s" })
+    ResGroup:AddLabel("Vacuum needs VacuumOwned. Gems within 35 studs.", true)
+
+    local CollectingRight = Collecting:AddRightGroupbox("Collecting Stats", "bar-chart")
+    CollectingRight:AddLabel("HandHold, Speed & Grab affect manual speed.", true)
+    CollectingRight:AddLabel("Capacity limits auto loops; auto-sell avoids full.", true)
+
+    -- Selling sub-tab
+    local SellGroup = Selling:AddLeftGroupbox("Selling", "coins")
+    SellGroup:AddToggle("AutoSellHay", { Text = "Auto Sell Hay", Default = false })
+    SellGroup:AddSlider("SellThreshold", { Text = "Sell When Hay >=", Default = 25, Min = 1, Max = 250, Rounding = 0 })
+    SellGroup:AddToggle("SellOnlyIfFull", { Text = "Only Sell If Full", Default = false })
+    SellGroup:AddLabel("Fires SellHay:FireServer() near cow. No distance check server-side.", true)
+
+    local SellInfo = Selling:AddRightGroupbox("Sell Info", "info")
+    SellInfo:AddLabel("Sell logic: if HayHeld >= Threshold then Sell. Full overrides.", true)
+    SellInfo:AddLabel("VacuumLoad also counts as held.", true)
+
+    -- Tools sub-tab
+    local ToolGroup = Tools:AddLeftGroupbox("Auto Tool Usage", "hammer")
+    ToolGroup:AddToggle("AutoUseTNT", { Text = "Auto Use TNT", Default = false, Tooltip = "Light & throw TNT on cooldown" })
+    ToolGroup:AddToggle("AutoUsePitchfork", { Text = "Auto Use Pitchfork", Default = false })
+    ToolGroup:AddToggle("AutoDeployDrone", { Text = "Auto Deploy Drone", Default = false })
+    ToolGroup:AddToggle("AutoVacuum", { Text = "Auto Vacuum (Loop)", Default = false })
+    ToolGroup:AddSlider("ToolInterval", { Text = "Tool Interval", Default = 1, Min = 0.2, Max = 5, Rounding = 1, Suffix="s" })
+
+    local ToolReq = Tools:AddRightGroupbox("Requirements", "shield-check")
+    ToolReq:AddLabel("PitchforkOwned, TntOwned, DroneOwned, VacuumOwned required per tool.", true)
+    ToolReq:AddLabel("TNT cooldown & vacuum heat managed by server; script respects 1s loop.", true)
+    ToolReq:AddDivider()
+    ToolReq:AddButton({ Text = "Equip Pitchfork (Slot 3)", Func = function() pcall(function() Workspace.CurrentCamera.CFrame = Workspace.CurrentCamera.CFrame end) end })
+
+    -- Needle sub-tab
+    local NeedleGroup = NeedleTab:AddLeftGroupbox("Needle", "search")
+    NeedleGroup:AddToggle("AutoFindNeedle", { Text = "Auto Find Needle", Default = false, Tooltip = "Continuously pick around pile center to reveal needle" })
+    NeedleGroup:AddToggle("AutoHandInNeedle", { Text = "Auto Hand In Needle", Default = false, Tooltip = "Fires NeedleHandIn when near NPC" })
+    NeedleGroup:AddSlider("NeedleInterval", { Text = "Needle Interval", Default = 1, Min = 0.2, Max = 3, Rounding = 1, Suffix="s" })
+
+    local NeedleInfo = NeedleTab:AddRightGroupbox("How Needle Works", "help-circle")
+    NeedleInfo:AddLabel("Needle spawns under hay. Removing hay reveals it. Hand in at farmer.", true)
+    NeedleInfo:AddLabel("Pile center from Config.PILE_CENTER used for automation.", true)
+end
+
+-- INVENTORY TAB with sub-tabs Purchasing vs Upgrading
+do
+    Tabs.Inventory:SetSubTabAlignment("Center")
+    local Shop = Tabs.Inventory:AddSubTab({ Name = "Shop Items", Icon = "shopping-cart" })
+    local Upgrades = Tabs.Inventory:AddSubTab({ Name = "Upgrades", Icon = "trending-up" })
+
+    -- Shop Items: multi-select buy
+    local BuyGroup = Shop:AddLeftGroupbox("Purchasing", "shopping-bag")
+    BuyGroup:AddDropdown("BuyToolsList", {
+        Text = "Buy Tools Selection",
+        Values = { "Pitchfork", "TNT", "Drone", "Vacuum", "Infinite Bag", "Capacity Bag" },
+        Default = 1,
+        Multi = true,
+        Searchable = true,
+        Expandable = true,
+        ExpandColumns = 2,
+    })
+    BuyGroup:AddToggle("AutoBuyTools", { Text = "Auto Buy Selected Tools", Default = false })
+    BuyGroup:AddSlider("BuyInterval", { Text = "Buy Interval", Default = 1, Min = 0.5, Max = 5, Rounding = 1, Suffix="s" })
+    BuyGroup:AddLabel("Pitchfork=Tnt=Drone=Vacuum=InfiniteBag via BuyShopItem. Capacity Bag via BuyUpgrade:Capacity.", true)
+
+    local OwnedGroup = Shop:AddRightGroupbox("Ownership", "check")
+    OwnedGroup:AddLabel("Ownership attributes: PitchforkOwned, TntOwned, DroneOwned, VacuumOwned, InfiniteBagOwned", true)
+    OwnedGroup:AddButton({ Text = "Check Ownership", Func = function()
+        local t = {}
+        for _,k in ipairs({"PitchforkOwned","TntOwned","DroneOwned","VacuumOwned","InfiniteBagOwned","HayUpgradeCapacity"}) do table.insert(t, k..": "..tostring(LocalPlayer:GetAttribute(k))) end
+        Library:Notify({Title="Ownership", Description=table.concat(t,"\n"), Time=4})
+    end })
+
+    -- Upgrades: split into groupboxes per category
+    local PermGroup = Upgrades:AddLeftGroupbox("Permanent (Gems)", "gem")
+    PermGroup:AddToggle("UpgBagSize", { Text = "Auto Upgrade Bag Size", Default = false, Tooltip = "ExtraHoldAmount -> Gems 25,50,75,100,150,450" })
+    PermGroup:AddToggle("UpgExtraTake", { Text = "Auto Upgrade Hand Grab Amount", Default = false, Tooltip = "ExtraTakeAmount Gems" })
+    PermGroup:AddToggle("UpgGemValue", { Text = "Auto Upgrade Gem Value", Default = false })
+    PermGroup:AddToggle("UpgHayValue", { Text = "Auto Upgrade Hay Value", Default = false })
+    PermGroup:AddSlider("PermInterval", { Text = "Permanent Loop", Default = 1, Min = 0.5, Max = 5, Rounding = 1, Suffix="s" })
+    PermGroup:AddLabel("Currency: Gems. Permanent lobby multiplier.", true)
+
+    local HandGroup = Upgrades:AddRightGroupbox("Hand Upgrades (Cash)", "hand")
+    HandGroup:AddToggle("UpgHandSpeed", { Text = "Auto Hand Speed", Default = false, Tooltip = "Speed track 0.55->0.3" })
+    HandGroup:AddToggle("UpgHandGrab", { Text = "Auto Hand Grasp", Default = false })
+    HandGroup:AddToggle("UpgHandHold", { Text = "Auto Hand Hold", Default = false })
+
+    local TntGroup = Upgrades:AddLeftGroupbox("TNT Upgrades", "bomb")
+    TntGroup:AddToggle("UpgTntLuck", { Text = "Auto TNT Lucky Blast", Default = false })
+    TntGroup:AddToggle("UpgTntCooldown", { Text = "Auto TNT Cooldown", Default = false })
+    TntGroup:AddToggle("UpgTntPower", { Text = "Auto TNT Power", Default = false })
+
+    local PitchGroup = Upgrades:AddRightGroupbox("Pitchfork Upgrades", "fork-knife")
+    PitchGroup:AddToggle("UpgPitchCooldown", { Text = "Auto Pitchfork Cooldown", Default = false })
+    PitchGroup:AddToggle("UpgPitchHold", { Text = "Auto Pitchfork Hold", Default = false })
+    PitchGroup:AddToggle("UpgPitchSweep", { Text = "Auto Pitchfork Sweep", Default = false })
+
+    local DroneGroup = Upgrades:AddLeftGroupbox("Drone Upgrades", "plane")
+    DroneGroup:AddToggle("UpgDroneSpeed", { Text = "Auto Drone Speed", Default = false })
+    DroneGroup:AddToggle("UpgDroneGrab", { Text = "Auto Drone Grasp", Default = false })
+    DroneGroup:AddToggle("UpgDroneCapacity", { Text = "Auto Drone Capacity", Default = false })
+
+    local VacGroup = Upgrades:AddRightGroupbox("Vacuum Upgrades", "wind")
+    VacGroup:AddToggle("UpgVacPower", { Text = "Auto Vacuum Power", Default = false })
+    VacGroup:AddToggle("UpgVacCooling", { Text = "Auto Vacuum Cooling", Default = false })
+    VacGroup:AddToggle("UpgVacRuntime", { Text = "Auto Vacuum Runtime", Default = false })
+
+    local CapGroup = Upgrades:AddLeftGroupbox("Capacity", "package")
+    CapGroup:AddToggle("UpgCapacity", { Text = "Auto Upgrade Carry Capacity", Default = false, Tooltip = "25->250 cash upgrades" })
+    CapGroup:AddLabel("Cash upgrades: use BuyUpgrade with track names. Check affordability via getCash().", true)
+end
+
+-- SETTINGS TAB: Config Saver/Loader + Anti-AFK
+do
+    local Menu = Tabs.Settings:AddLeftGroupbox("Menu", "wrench")
+    Menu:AddToggle("ShowCustomCursor", { Text = "Custom Cursor", Default = Library.ShowCustomCursor, Callback = function(v) Library.ShowCustomCursor = v end })
+    Menu:AddToggle("AlwaysOnTop", { Text = "Always On Top", Default = Window.AlwaysOnTop, Callback = function(v) Window:SetAlwaysOnTop(v) end })
+    Menu:AddSlider("CornerRadiusSet", { Text = "Corner Radius", Default = 10, Min = 0, Max = 20, Rounding = 0, Callback = function(v) Window:SetCornerRadius(v) end })
+    Menu:AddSlider("DPIScaleSet", { Text = "DPI Scale", Default = 100, Min = 50, Max = 200, Rounding = 0, Suffix="%", Callback = function(v) Library:SetDPIScale(v) end })
+    Menu:AddDropdown("NotifySidePick", { Text = "Notification Side", Values = {"Left","Right"}, Default = "Right", Callback = function(v) Library:SetNotifySide(v) end })
+    Menu:AddDivider()
+    Menu:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", { Default = "RightShift", NoUI = true, Text = "Menu keybind" })
+    Library.ToggleKeybind = Options.MenuKeybind
+    Menu:AddButton("Unload", function() Library:Unload() end)
+
+    local System = Tabs.Settings:AddRightGroupbox("System", "shield")
+    System:AddToggle("AntiAFK", { Text = "Anti-AFK (jump every 5m)", Default = true })
+    System:AddLabel("Enabled by default. Uses jump to keep alive.", true)
+    System:AddToggle("AutoRejoin", { Text = "Notify On Rejoin", Default = false })
+end
+
+-- Addons wiring
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({ "MenuKeybind" })
+ThemeManager:SetFolder("OuroborosHub")
+SaveManager:SetFolder("OuroborosHub/" .. gameName)
+SaveManager:BuildConfigSection(Tabs.Settings)
+ThemeManager:ApplyToTab(Tabs.Settings)
+SaveManager:LoadAutoloadConfig()
+
+-- ===== Automation Logic =====
+-- interval helpers
+local function waitInterval(optName, fallback)
+    local v = Options[optName] and Options[optName].Value or fallback
+    return tonumber(v) or fallback
+end
+
+-- helper: ensure near hay pile if far from any hay
+local function ensureNearPileForPick()
+    local pile = Config.PILE_CENTER
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    local distToPile = (hrp.Position - pile).Magnitude
+    if distToPile > 28 then
+        hrp.CFrame = CFrame.new(pile + Vector3.new(math.random(-3,3), 5, math.random(-3,3)))
+        if workspace.CurrentCamera then
+            workspace.CurrentCamera.CFrame = CFrame.new(hrp.Position + Vector3.new(0,4,0), pile)
+        end
+        task.wait(0.25)
+    end
+end
+
+local function teleportToPart(part, yOffset)
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp or not part then return end
+    local dist = (hrp.Position - part.Position).Magnitude
+    if dist > 15 then
+        hrp.CFrame = part.CFrame + Vector3.new(0, yOffset or 4, 1.5)
+        if workspace.CurrentCamera then
+            pcall(function() workspace.CurrentCamera.CFrame = CFrame.lookAt(workspace.CurrentCamera.CFrame.Position, part.Position) end)
+        end
+        task.wait(0.18)
+    else
+        if workspace.CurrentCamera then
+            pcall(function() workspace.CurrentCamera.CFrame = CFrame.lookAt(workspace.CurrentCamera.CFrame.Position, part.Position) end)
+        end
+    end
+end
+
+-- Auto Pick Hay (1s loop, per rule) - now with teleport to pile/hay
+task.spawn(function()
+    while true do
+        task.wait(waitInterval("CollectInterval",1))
+        if Library.Unloaded then break end
+        if Toggles.AutoPickHay and Toggles.AutoPickHay.Value then
+            if not isBagFull() then
+                local hay = findClosestHay()
+                if not hay then
+                    ensureNearPileForPick()
+                    hay = findClosestHay()
+                end
+                if hay then
+                    teleportToPart(hay, 4)
+                    local id = hay:GetAttribute("HayId")
+                    if id then
+                        local candidates = getGrabCandidates(hay)
+                        pcall(function() PickHay:FireServer(id, candidates) end)
+                    else
+                        pcall(function() PickDroppedHay:FireServer(hay) end)
+                    end
+                else
+                    ensureNearPileForPick()
+                end
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(waitInterval("CollectInterval",1))
+        if Library.Unloaded then break end
+        if Toggles.AutoCollectDroppedHay and Toggles.AutoCollectDroppedHay.Value then
+            if not isBagFull() then
+                local d = findClosestDropped()
+                if not d then
+                    ensureNearPileForPick()
+                    d = findClosestDropped()
+                end
+                if d then
+                    local part = d:IsA("BasePart") and d or d:FindFirstChildWhichIsA("BasePart")
+                    if part then teleportToPart(part, 3) end
+                    pcall(function() PickDroppedHay:FireServer(d) end)
+                end
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(waitInterval("CollectInterval",1))
+        if Library.Unloaded then break end
+        if Toggles.AutoCollectGems and Toggles.AutoCollectGems.Value then
+            local gemPart, id = findClosestGem()
+            if not gemPart then
+                ensureNearPileForPick()
+                gemPart, id = findClosestGem()
+            end
+            if gemPart and id then
+                teleportToPart(gemPart, 3)
+                pcall(function() CollectGem:FireServer(id) end)
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(waitInterval("SellThreshold",1) and 1 or 1)
+        if Library.Unloaded then break end
+        if Toggles.AutoSellHay and Toggles.AutoSellHay.Value then
+            local held = getHayHeld()
+            local thresh = Options.SellThreshold and Options.SellThreshold.Value or 25
+            local onlyFull = Toggles.SellOnlyIfFull and Toggles.SellOnlyIfFull.Value
+            local should = false
+            if onlyFull then should = isBagFull()
+            else should = held >= thresh end
+            if should and held > 0 then trySell() end
+        end
+    end
+end)
+
+-- Vacuum collect loop (Start/Stop) - ensures near pile
+do
+    local vacActive = false
+    task.spawn(function()
+        while true do
+            task.wait(waitInterval("CollectInterval",1))
+            if Library.Unloaded then break end
+            local want = Toggles.AutoVacuumCollect and Toggles.AutoVacuumCollect.Value
+            local want2 = Toggles.AutoVacuum and Toggles.AutoVacuum.Value
+            local should = want or want2
+            if should and owns("VacuumOwned") then
+                if not vacActive and not isBagFull() then
+                    -- ensure near pile before vacuum
+                    local hay = findClosestHay()
+                    if not hay then ensureNearPileForPick() hay = findClosestHay() end
+                    if hay then teleportToPart(hay, 5) end
+                    pcall(function() VacuumAction:FireServer("Start") end)
+                    vacActive = true
+                elseif isBagFull() and vacActive then
+                    pcall(function() VacuumAction:FireServer("Stop") end)
+                    vacActive = false
+                    trySell()
+                end
+            else
+                if vacActive then pcall(function() VacuumAction:FireServer("Stop") end) vacActive=false end
+            end
+            -- overheat check: VacuumOverheated true -> stop and teleport back to pile after cooldown
+            if vacActive and LocalPlayer:GetAttribute("VacuumOverheated") then
+                pcall(function() VacuumAction:FireServer("Stop") end) vacActive=false
+                -- wait a bit then ensure back near pile for when cooled
+                task.wait(0.5)
+                ensureNearPileForPick()
+            end
+        end
+    end)
+end
+
+-- Tools loops
+task.spawn(function()
+    while true do
+        task.wait(waitInterval("ToolInterval",1))
+        if Library.Unloaded then break end
+        if Toggles.AutoUseTNT and Toggles.AutoUseTNT.Value and owns("TntOwned") then
+            -- check cooldown: TntCooldown attribute? Use attribute TntCooldown or just fire and server throttles
+            local ok = not LocalPlayer:GetAttribute("NeedleInputLocked")
+            if ok then
+                pcall(function() TntAction:FireServer("light") end)
+                task.wait(0.4)
+                local cam = Workspace.CurrentCamera
+                if cam then
+                    local dir = cam.CFrame.LookVector * 40 + Vector3.new(0,8,0)
+                    local cf = cam.CFrame
+                    pcall(function() TntAction:FireServer("throw", cf, dir) end)
+                end
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(waitInterval("ToolInterval",1))
+        if Library.Unloaded then break end
+        if Toggles.AutoUsePitchfork and Toggles.AutoUsePitchfork.Value and owns("PitchforkOwned") then
+            local hay = findClosestHay()
+            if not hay then ensureNearPileForPick() hay = findClosestHay() end
+            if hay then teleportToPart(hay, 4) end
+            local id = hay and hay:GetAttribute("HayId")
+            if id then
+                pcall(function() PitchforkDig:FireServer(id) end)
+            else
+                local fakeId = LocalPlayer:GetAttribute("HoveredHayId")
+                if fakeId then
+                    -- ensure still near pile before fallback
+                    ensureNearPileForPick()
+                    pcall(function() PitchforkDig:FireServer(fakeId) end)
+                end
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(waitInterval("ToolInterval",1))
+        if Library.Unloaded then break end
+        if Toggles.AutoDeployDrone and Toggles.AutoDeployDrone.Value and owns("DroneOwned") then
+            if not LocalPlayer:GetAttribute("DroneDeployed") then
+                pcall(function() DeployDrone:FireServer() end)
+            end
+        end
+    end
+end)
+
+-- Needle loops - ensures near pile before picking
+task.spawn(function()
+    while true do
+        task.wait(waitInterval("NeedleInterval",1))
+        if Library.Unloaded then break end
+        if Toggles.AutoFindNeedle and Toggles.AutoFindNeedle.Value then
+            if not LocalPlayer:GetAttribute("NeedleRoundComplete") then
+                local hay = findClosestHay()
+                if not hay then ensureNearPileForPick() hay = findClosestHay() end
+                if hay then
+                    teleportToPart(hay, 4)
+                    local id = hay:GetAttribute("HayId")
+                    if id and not isBagFull() then
+                        pcall(function() PickHay:FireServer(id, getGrabCandidates(hay)) end)
+                    elseif isBagFull() then
+                        trySell()
+                    end
+                else
+                    ensureNearPileForPick()
+                end
+            end
+        end
+        if Toggles.AutoHandInNeedle and Toggles.AutoHandInNeedle.Value then
+            -- hand in often requires near farmer NPC, teleport near farmer if needed
+            local farmer = workspace:FindFirstChild("NPC") and workspace.NPC:FindFirstChild("Farmer_NPC")
+            if farmer and farmer:GetPivot() then
+                local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                if hrp and (hrp.Position - farmer:GetPivot().Position).Magnitude > 20 then
+                    hrp.CFrame = farmer:GetPivot() * CFrame.new(0,0,4)
+                    task.wait(0.2)
+                end
+            end
+            pcall(function() NeedleHandIn:FireServer() end)
+        end
+    end
+end)
+
+-- Auto Buy Tools (multi-select) - respects {Pitchfork, TNT...} becomes dropdown multi
+task.spawn(function()
+    while true do
+        task.wait(waitInterval("BuyInterval",1))
+        if Library.Unloaded then break end
+        if Toggles.AutoBuyTools and Toggles.AutoBuyTools.Value then
+            local sel = Options.BuyToolsList and Options.BuyToolsList.Value or {}
+            -- Options.BuyToolsList for multi is dict like {Pitchfork=true,...}
+            local list = {}
+            if typeof(sel) == "table" then
+                for k,v in pairs(sel) do if v then table.insert(list, k) end end
+                -- fallback if array style
+                if #list==0 then for _,v in ipairs(sel) do table.insert(list, v) end end
+            end
+            for _, name in ipairs(list) do
+                if name == "Pitchfork" and not owns("PitchforkOwned") then pcall(function() BuyShopItem:FireServer("Pitchfork") end)
+                elseif name == "TNT" and not owns("TntOwned") then pcall(function() BuyShopItem:FireServer("Tnt") end)
+                elseif name == "Drone" and not owns("DroneOwned") then pcall(function() BuyShopItem:FireServer("Drone") end)
+                elseif name == "Vacuum" and not owns("VacuumOwned") then pcall(function() BuyShopItem:FireServer("Vacuum") end)
+                elseif name == "Infinite Bag" and not owns("InfiniteBagOwned") then pcall(function() BuyShopItem:FireServer("InfiniteBag") end)
+                elseif name == "Capacity Bag" then
+                    -- capacity bag is session upgrade
+                    local st = tonumber(LocalPlayer:GetAttribute("HayUpgradeCapacity")) or 1
+                    local track = Config.UPGRADE_TRACKS["Capacity"]
+                    if track and st < #track.Levels then
+                        local cost = track.Levels[st+1].Cost
+                        if getCash() >= (cost or 0) then pcall(function() BuyUpgrade:FireServer("Capacity") end) end
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- Upgrade helpers
+local function tryBuyTrack(trackName)
+    -- trackName like "HandHold" etc, uses BuyUpgrade
+    local track = Config.UPGRADE_TRACKS[trackName]
+    if not track then return end
+    local cur = tonumber(LocalPlayer:GetAttribute("HayUpgrade"..trackName)) or 1
+    if cur >= #track.Levels then return end
+    local nxt = track.Levels[cur+1]
+    if not nxt then return end
+    local cost = nxt.Cost or 0
+    if getCash() >= cost then
+        pcall(function() BuyUpgrade:FireServer(trackName) end)
+    end
+end
+local function tryBuyPermanent(id)
+    local u = UpgradeConfig.getUpgrade(id)
+    if not u then return end
+    local cur = tonumber(LocalPlayer:GetAttribute("Upgrade"..id)) or 0
+    local max = UpgradeConfig.getMaxLevel(u)
+    if cur >= max then return end
+    local price = UpgradeConfig.getPrice(u, cur)
+    if price and getGems() >= price then
+        pcall(function() BuyUpgrade:FireServer(id) end)
+    end
+end
+
+-- Permanent upgrades loop
+task.spawn(function()
+    while true do
+        task.wait(waitInterval("PermInterval",1))
+        if Library.Unloaded then break end
+        if Toggles.UpgBagSize and Toggles.UpgBagSize.Value then tryBuyPermanent("ExtraHoldAmount") end
+        if Toggles.UpgExtraTake and Toggles.UpgExtraTake.Value then tryBuyPermanent("ExtraTakeAmount") end
+        if Toggles.UpgGemValue and Toggles.UpgGemValue.Value then tryBuyPermanent("GemValue") end
+        if Toggles.UpgHayValue and Toggles.UpgHayValue.Value then tryBuyPermanent("ExtraHayValuePercentage") end
+    end
+end)
+
+-- Session upgrades loops
+task.spawn(function()
+    while true do
+        task.wait(1.2)
+        if Library.Unloaded then break end
+        if Toggles.UpgCapacity and Toggles.UpgCapacity.Value then tryBuyTrack("Capacity") end
+        if Toggles.UpgHandSpeed and Toggles.UpgHandSpeed.Value then tryBuyTrack("Speed") end
+        -- note UpgHandGrab duplicates permanent? HandGrasp is Grab track
+        if Toggles["UpgHandGrab"] and Toggles["UpgHandGrab"].Value then -- careful naming collision: permanent vs hand grasp share? Use distinct toggle for hand grasp? We have UpgHandGrab for permanent? Actually hand grasp is UpgHandGrab duplicate. For session grab use UpgHandGrab toggle but we used permanent same name. Use Hand grasp toggle defined as UpgHandGrab already for permanent, so need separate. For now treat UpgHandGrab as both? Better use UpgHandGrab for permanent and UpgHandGrasp non-existent. For safety check two toggles with same name - only first exists. So we map Hand group: UpgHandSpeed, UpgHandGrab (session Grab) and UpgHandHold. Permanent Hand Grab is same toggle, intentional overlap, will trigger both.
+            tryBuyTrack("Grab")
+        end
+        if Toggles.UpgHandHold and Toggles.UpgHandHold.Value then tryBuyTrack("HandHold") end
+        if Toggles.UpgTntLuck and Toggles.UpgTntLuck.Value then tryBuyTrack("TntLuck") end
+        if Toggles.UpgTntCooldown and Toggles.UpgTntCooldown.Value then tryBuyTrack("TntCooldown") end
+        if Toggles.UpgTntPower and Toggles.UpgTntPower.Value then tryBuyTrack("TntPower") end
+        if Toggles.UpgPitchCooldown and Toggles.UpgPitchCooldown.Value then tryBuyTrack("PitchforkCooldown") end
+        if Toggles.UpgPitchHold and Toggles.UpgPitchHold.Value then tryBuyTrack("PitchforkHold") end
+        if Toggles.UpgPitchSweep and Toggles.UpgPitchSweep.Value then tryBuyTrack("Pitchfork") end
+        if Toggles.UpgDroneSpeed and Toggles.UpgDroneSpeed.Value then tryBuyTrack("DroneSpeed") end
+        if Toggles.UpgDroneGrab and Toggles.UpgDroneGrab.Value then tryBuyTrack("DroneGrab") end
+        if Toggles.UpgDroneCapacity and Toggles.UpgDroneCapacity.Value then tryBuyTrack("DroneCapacity") end
+        if Toggles.UpgVacPower and Toggles.UpgVacPower.Value then tryBuyTrack("VacuumPower") end
+        if Toggles.UpgVacCooling and Toggles.UpgVacCooling.Value then tryBuyTrack("VacuumCooling") end
+        if Toggles.UpgVacRuntime and Toggles.UpgVacRuntime.Value then tryBuyTrack("VacuumRuntime") end
+    end
+end)
+
+-- Anti-AFK jump every 5 minutes enabled by default
+task.spawn(function()
+    while true do
+        task.wait(300)
+        if Library.Unloaded then break end
+        if Toggles.AntiAFK and Toggles.AntiAFK.Value then
+            pcall(function()
+                local char = LocalPlayer.Character
+                local hum = char and char:FindFirstChildOfClass("Humanoid")
+                if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) hum.Jump = true end
+                VirtualUser:CaptureController()
+                VirtualUser:ClickButton2(Vector2.new())
+            end)
+        end
+    end
+end)
+
+-- Safety: unload clean
+Library:OnUnload(function()
+    pcall(function() VacuumAction:FireServer("Stop") end)
+    Library.Unloaded = true
+    print("[Ouroboros] Unloaded @hidevin - "..gameName)
+end)
+
+Library:Notify({ Title = "@hidevin", Description = gameName.." loaded. Farming=collect/sell/tools | Inventory=shop/upgrades", Time = 5, Type = "Success" })
+print("[Ouroboros] Loaded "..gameName.." via ObsidianUltra")
